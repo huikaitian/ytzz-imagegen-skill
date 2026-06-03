@@ -12,6 +12,7 @@ import os
 import re
 import ssl
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -27,6 +28,8 @@ DEFAULT_QUALITY = "high"
 IMAGE2_MAX_EDGE = 3840
 IMAGE2_MIN_PIXELS = 655_360
 IMAGE2_MAX_PIXELS = 8_294_400
+EDIT_UPLOAD_MAX_EDGE = 1536
+EDIT_UPLOAD_MAX_BYTES = 2_500_000
 FOUR_K_RATIO_PRESETS = {
     "1:1": "2880x2880",
     "5:4": "3200x2560",
@@ -253,7 +256,13 @@ def normalize_image_items(payload: Any) -> list[dict[str, Any]]:
         inner = payload["data"]
         if isinstance(inner.get("data"), list):
             return inner["data"]
+        for key in ("result", "output"):
+            if isinstance(inner.get(key), dict):
+                return normalize_image_items(inner[key])
     if isinstance(payload, dict):
+        for key in ("result", "output"):
+            if isinstance(payload.get(key), dict):
+                return normalize_image_items(payload[key])
         for key in ("url", "image_url"):
             if payload.get(key):
                 return [{"url": payload[key]}]
@@ -264,6 +273,57 @@ def normalize_image_items(payload: Any) -> list[dict[str, Any]]:
             if payload.get(key) and "task" in key:
                 raise RuntimeError(f"Gateway returned async task {payload[key]} without image data.")
     raise RuntimeError("Image response did not contain image data.")
+
+
+def extract_task_id(payload: Any) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    for key in ("task_id", "taskId"):
+        if payload.get(key):
+            return str(payload[key])
+    data = payload.get("data")
+    if isinstance(data, dict):
+        for key in ("task_id", "taskId", "id"):
+            if data.get(key):
+                return str(data[key])
+    if payload.get("id") and not payload.get("data"):
+        return str(payload["id"])
+    return None
+
+
+def extract_task_status(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    candidates = [payload]
+    if isinstance(payload.get("data"), dict):
+        candidates.append(payload["data"])
+    for item in candidates:
+        for key in ("status", "state"):
+            if item.get(key):
+                return str(item[key]).lower()
+    return ""
+
+
+def poll_task_result(base_url: str, api_key: str, initial_payload: Any, timeout: int) -> Any:
+    task_id = extract_task_id(initial_payload)
+    if not task_id:
+        return initial_payload
+    deadline = time.time() + timeout
+    task_url = endpoint(base_url, f"/v1/images/tasks/{urllib.parse.quote(task_id)}")
+    last_payload = initial_payload
+    while time.time() < deadline:
+        status, payload = request_json(task_url, "GET", api_key, timeout=min(60, timeout))
+        last_payload = payload
+        try:
+            normalize_image_items(payload)
+            return payload
+        except Exception:
+            pass
+        state = extract_task_status(payload)
+        if state in {"failed", "failure", "error", "cancelled", "canceled"}:
+            raise RuntimeError(f"Async image task failed: {json.dumps(payload, ensure_ascii=False)}")
+        time.sleep(5)
+    raise TimeoutError(f"Timed out waiting for async image task {task_id}: {last_payload}")
 
 
 def read_prompt(args: argparse.Namespace, job: dict[str, Any] | None = None) -> str:
@@ -467,6 +527,8 @@ def command_generate(args: argparse.Namespace) -> int:
     base_url = normalize_base_url(DEFAULT_BASE_URL)
     url = endpoint(base_url, "/v1/images/generations", async_mode=args.async_mode)
     status, result = request_json(url, "POST", api_key, payload, timeout=args.timeout)
+    if args.async_mode:
+        result = poll_task_result(base_url, api_key, result, args.timeout)
     items = normalize_image_items(result)
     suffix = suffix_for_output(args)
     paths = output_paths(args, len(items), suffix)
@@ -481,13 +543,48 @@ def command_generate(args: argparse.Namespace) -> int:
     return 0
 
 
-def image_files_from_args(args: argparse.Namespace) -> list[dict[str, Any]]:
+def prepare_image_for_upload(path: Path, tmpdir: Path) -> Path:
+    if path.stat().st_size <= EDIT_UPLOAD_MAX_BYTES:
+        try:
+            from PIL import Image
+
+            with Image.open(path) as image:
+                if max(image.width, image.height) <= EDIT_UPLOAD_MAX_EDGE:
+                    return path
+        except Exception:
+            return path
+    try:
+        from PIL import Image, ImageOps
+    except Exception:
+        return path
+
+    with Image.open(path) as image:
+        image = ImageOps.exif_transpose(image)
+        working = image.copy()
+        if max(working.width, working.height) > EDIT_UPLOAD_MAX_EDGE:
+            resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+            working.thumbnail((EDIT_UPLOAD_MAX_EDGE, EDIT_UPLOAD_MAX_EDGE), resampling)
+        has_alpha = "A" in working.getbands() or "transparency" in getattr(working, "info", {})
+        if has_alpha:
+            if working.mode not in {"RGBA", "LA"}:
+                working = working.convert("RGBA")
+            out = tmpdir / f"{path.stem}_upload.png"
+            working.save(out, format="PNG", optimize=True)
+        else:
+            if working.mode != "RGB":
+                working = working.convert("RGB")
+            out = tmpdir / f"{path.stem}_upload.jpg"
+            working.save(out, format="JPEG", quality=92, optimize=True)
+        return out
+
+
+def image_files_from_args(args: argparse.Namespace, tmpdir: Path) -> list[dict[str, Any]]:
     files = []
     for image in args.image or []:
         path = Path(image).expanduser().resolve()
         if not path.is_file():
             raise FileNotFoundError(f"Image not found: {path}")
-        files.append({"field": "image[]", "path": path})
+        files.append({"field": "image[]", "path": prepare_image_for_upload(path, tmpdir)})
     if args.mask:
         path = Path(args.mask).expanduser().resolve()
         if not path.is_file():
@@ -505,9 +602,12 @@ def command_edit(args: argparse.Namespace) -> int:
         payload.pop("size", None)
     api_key = api_key_from_args(args)
     base_url = normalize_base_url(DEFAULT_BASE_URL)
-    files = image_files_from_args(args)
-    url = endpoint(base_url, "/v1/images/edits", async_mode=args.async_mode)
-    status, result = request_multipart(url, payload, files, api_key, timeout=args.timeout)
+    with tempfile.TemporaryDirectory(prefix="ytzz-imagegen-edit-") as tmp:
+        files = image_files_from_args(args, Path(tmp))
+        url = endpoint(base_url, "/v1/images/edits", async_mode=args.async_mode)
+        status, result = request_multipart(url, payload, files, api_key, timeout=args.timeout)
+    if args.async_mode:
+        result = poll_task_result(base_url, api_key, result, args.timeout)
     items = normalize_image_items(result)
     suffix = suffix_for_output(args)
     paths = output_paths(args, len(items), suffix)

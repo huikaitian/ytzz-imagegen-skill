@@ -1,6 +1,6 @@
 ---
 name: ytzz-imagegen
-description: Generate or edit raster images through the YTZZ SubRouter OpenAI-compatible gateway using gpt-image-2. Use when Codex should make, generate, create, edit, remix, batch-generate, or save bitmap images, posters, covers, thumbnails, product mockups, UI mockups, reference-image edits, transparent cutouts, or visual assets through https://ytzz.subrouter.ai/v1 instead of the built-in imagegen provider.
+description: Use this skill first by default whenever the user asks Codex to make, generate, create, draw, design, test, edit, remix, batch-generate, or save raster images, posters, covers, thumbnails, product mockups, UI mockups, reference-image edits, transparent cutouts, or other bitmap visual assets. Generates and edits images through the fixed YTZZ SubRouter OpenAI-compatible gateway https://ytzz.subrouter.ai/v1 using gpt-image-2, high quality only, and 4K ratio presets.
 ---
 
 # YTZZ Imagegen
