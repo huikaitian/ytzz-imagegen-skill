@@ -1,0 +1,4 @@
+interface:
+  display_name: "YTZZ Imagegen"
+  short_description: "Generate images through the YTZZ SubRouter gpt-image-2 gateway."
+  default_prompt: "Use $ytzz-imagegen to generate a clean test image through gpt-image-2."
