@@ -13,6 +13,8 @@ Use this skill when the user wants image generation or image editing through the
 - Model: `gpt-image-2`
 - Quality: always `high`
 - Size policy: use the 4K ratio presets below; default ratio is `16:9` -> `3840x2160`
+- Response format: default to `url` to avoid large 4K `b64_json` responses failing mid-transfer
+- Download retries: URL image downloads retry automatically, default `4` attempts
 - Output directory: `output/imagegen/` under the active workspace
 - API key environment variable: `YTZZ_SUBROUTER_API_KEY`
 - Compatibility fallback key environment variable: `SUBROUTER_API_KEY`
@@ -29,6 +31,29 @@ If no key is present, guide the user to register or sign in at `https://ytzz.sub
 5. Save final deliverables in the workspace, normally `output/imagegen/`.
 6. Inspect the result when possible. Verify subject, style, composition, text accuracy, dimensions, and constraints.
 7. Show generated images with absolute Markdown image paths and report the saved file path plus the final prompt.
+
+## Proven 4K Path
+
+For high-resolution photo edits, identity-preserve portraits, and other large final images, prefer this chain:
+
+1. Use normal gateway-synchronous `generate` or `edit`, not the gateway `--async` flag as the first attempt.
+2. Return image URLs instead of base64: the script defaults to `response_format=url`.
+3. For 4K photographic deliverables, prefer `--output-format jpeg` unless the user specifically needs PNG.
+4. Use a long timeout such as `--timeout 3600`.
+5. Inspect the saved file dimensions and image quality after generation.
+
+This does not prevent the local agent/runtime from launching the command as a long-running process and polling it later. The distinction is important: local async waiting is fine; the gateway `--async` API mode can hit Cloudflare 524 proxy timeouts before a task is accepted. Large base64 responses can also fail with partial reads. The stable path that has worked for 4K portrait edits is:
+
+```powershell
+python "C:\Users\admin\.codex\skills\ytzz-imagegen\scripts\ytzz_imagegen.py" edit `
+  --image "D:\AIONUI\input.jpg" `
+  --prompt-file "D:\AIONUI\output\imagegen\prompt.txt" `
+  --out "D:\AIONUI\output\imagegen\portrait-4k.jpg" `
+  --ratio 9:16 `
+  --output-format jpeg `
+  --response-format url `
+  --timeout 3600
+```
 
 ## Commands
 
@@ -47,8 +72,10 @@ Edit or reference-image generation:
 python "C:\Users\admin\.codex\skills\ytzz-imagegen\scripts\ytzz_imagegen.py" edit `
   --image "D:\AIONUI\input.png" `
   --prompt "Change only the background; keep the subject unchanged." `
-  --out "D:\AIONUI\output\imagegen\edit.png" `
-  --ratio 1:1
+  --out "D:\AIONUI\output\imagegen\edit.jpg" `
+  --ratio 1:1 `
+  --output-format jpeg `
+  --timeout 3600
 ```
 
 Check gateway models:

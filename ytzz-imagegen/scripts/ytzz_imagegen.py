@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 import concurrent.futures
+import http.client
 import json
 import mimetypes
 import os
@@ -25,6 +26,8 @@ DEFAULT_BASE_URL = "https://ytzz.subrouter.ai/v1"
 DEFAULT_MODEL = "gpt-image-2"
 DEFAULT_RATIO = "16:9"
 DEFAULT_QUALITY = "high"
+DEFAULT_RESPONSE_FORMAT = "url"
+DEFAULT_DOWNLOAD_RETRIES = 4
 IMAGE2_MAX_EDGE = 3840
 IMAGE2_MIN_PIXELS = 655_360
 IMAGE2_MAX_PIXELS = 8_294_400
@@ -384,6 +387,8 @@ def payload_from_args(args: argparse.Namespace, prompt: str, job: dict[str, Any]
         value = job.get(key)
         if value is None:
             value = getattr(args, key, None)
+        if key == "response_format" and value in (None, ""):
+            value = DEFAULT_RESPONSE_FORMAT
         if value not in (None, "", "auto"):
             payload[key] = value
     return payload
@@ -452,20 +457,47 @@ def b64_to_bytes(value: str) -> bytes:
     return base64.b64decode(text)
 
 
-def download_bytes(url: str, timeout: int) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": "ytzz-imagegen/1.0"})
-    with urllib.request.urlopen(req, timeout=timeout, context=ssl_context()) as resp:
-        return resp.read()
+def download_bytes(url: str, timeout: int, retries: int = DEFAULT_DOWNLOAD_RETRIES) -> bytes:
+    attempts = max(1, retries)
+    retryable_http = {408, 409, 425, 429, 500, 502, 503, 504, 520, 522, 524}
+    last_error: BaseException | None = None
+    for attempt in range(1, attempts + 1):
+        req = urllib.request.Request(url, headers={"User-Agent": "ytzz-imagegen/1.0"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout, context=ssl_context()) as resp:
+                data = resp.read()
+                content_length = resp.headers.get("Content-Length")
+                if content_length:
+                    expected = int(content_length)
+                    if len(data) != expected:
+                        raise http.client.IncompleteRead(data, expected - len(data))
+                return data
+        except urllib.error.HTTPError as exc:
+            last_error = exc
+            if exc.code not in retryable_http or attempt == attempts:
+                raise
+        except (http.client.IncompleteRead, urllib.error.URLError, TimeoutError, OSError) as exc:
+            last_error = exc
+            if attempt == attempts:
+                raise
+        time.sleep(min(2**attempt, 30))
+    raise RuntimeError(f"Failed to download image after {attempts} attempts: {last_error}")
 
 
-def write_image_items(items: list[dict[str, Any]], paths: list[Path], timeout: int, force: bool) -> list[str]:
+def write_image_items(
+    items: list[dict[str, Any]],
+    paths: list[Path],
+    timeout: int,
+    force: bool,
+    download_retries: int = DEFAULT_DOWNLOAD_RETRIES,
+) -> list[str]:
     ensure_writable(paths, force)
     written = []
     for item, path in zip(items, paths):
         if item.get("b64_json"):
             data = b64_to_bytes(str(item["b64_json"]))
         elif item.get("url"):
-            data = download_bytes(str(item["url"]), timeout)
+            data = download_bytes(str(item["url"]), timeout, download_retries)
         else:
             raise RuntimeError("Image item did not contain b64_json or url.")
         path.write_bytes(data)
@@ -532,7 +564,7 @@ def command_generate(args: argparse.Namespace) -> int:
     items = normalize_image_items(result)
     suffix = suffix_for_output(args)
     paths = output_paths(args, len(items), suffix)
-    files = write_image_items(items, paths, args.timeout, args.force)
+    files = write_image_items(items, paths, args.timeout, args.force, args.download_retries)
     print_result({
         "ok": True,
         "status": status,
@@ -611,7 +643,7 @@ def command_edit(args: argparse.Namespace) -> int:
     items = normalize_image_items(result)
     suffix = suffix_for_output(args)
     paths = output_paths(args, len(items), suffix)
-    written = write_image_items(items, paths, args.timeout, args.force)
+    written = write_image_items(items, paths, args.timeout, args.force, args.download_retries)
     print_result({
         "ok": True,
         "status": status,
@@ -648,7 +680,7 @@ def run_batch_job(args: argparse.Namespace, job: dict[str, Any], index: int, bas
     job = dict(job)
     job["out_dir"] = str(args.out_dir)
     paths = output_paths(args, len(items), suffix, job, index=index)
-    files = write_image_items(items, paths, args.timeout, args.force)
+    files = write_image_items(items, paths, args.timeout, args.force, args.download_retries)
     return {
         "ok": True,
         "status": status,
@@ -712,6 +744,7 @@ def add_image_args(parser: argparse.ArgumentParser, include_out_dir: bool = True
     parser.add_argument("--n", type=int, default=1)
     parser.add_argument("--output-format", choices=["png", "jpeg", "webp"])
     parser.add_argument("--response-format")
+    parser.add_argument("--download-retries", type=int, default=DEFAULT_DOWNLOAD_RETRIES)
     parser.add_argument("--moderation")
     parser.add_argument("--background")
     parser.add_argument("--out")

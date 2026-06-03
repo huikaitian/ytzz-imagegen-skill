@@ -14,6 +14,8 @@ The skill uses `gpt-image-2`, always requests `quality=high`, and defaults to 4K
 - `gpt-image-2` image generation and edits
 - High-quality-only requests
 - 4K ratio presets from `1:1` through `3:1` and `1:3`
+- URL image responses by default for more reliable 4K transfers
+- Automatic retries for URL image downloads
 - Local file outputs under `output/imagegen/`
 - No API keys stored in the skill or repository
 
@@ -62,6 +64,21 @@ python "$env:USERPROFILE\.codex\skills\ytzz-imagegen\scripts\ytzz_imagegen.py" g
   --prompt "A rain-slick neon alley with one warm lantern reflected in the pavement" `
   --out ".\output\imagegen\neon-alley.png"
 ```
+
+Stable 4K photo edit path:
+
+```powershell
+python "$env:USERPROFILE\.codex\skills\ytzz-imagegen\scripts\ytzz_imagegen.py" edit `
+  --image ".\input\portrait.jpg" `
+  --prompt-file ".\output\imagegen\portrait-prompt.txt" `
+  --ratio 9:16 `
+  --output-format jpeg `
+  --response-format url `
+  --timeout 3600 `
+  --out ".\output\imagegen\portrait-4k.jpg"
+```
+
+For large photographic edits, use normal gateway-synchronous mode first. The local agent/runtime may still run the command as a long-lived process and poll it; that is different from the gateway `--async` flag. The gateway async entry can hit a Cloudflare 524 timeout before it returns a task id, while large base64 responses can fail mid-transfer. URL responses plus JPEG output have proven more reliable for 4K deliverables.
 
 Check connectivity:
 

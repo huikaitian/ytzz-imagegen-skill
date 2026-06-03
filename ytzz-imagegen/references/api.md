@@ -21,7 +21,8 @@ The script uses the fixed base URL `https://ytzz.subrouter.ai/v1`.
 - `quality`: this skill always sends `high`
 - `n`: number of images
 - `output_format`: `png`, `jpeg`, or `webp` when supported by the gateway
-- `response_format`: usually omit; the script handles `b64_json` or `url` responses
+- `response_format`: defaults to `url`; this avoids large 4K `b64_json` responses failing mid-transfer
+- `download_retries`: CLI-only download retry count for URL image responses; default is `4`
 
 For edits, pass one or more `--image` values. The script sends them as multipart `image[]` fields, which matches common OpenAI-compatible gateways.
 
@@ -63,8 +64,12 @@ The script accepts all of these shapes:
 - nested `{"data":{"data":[...]}}`
 - top-level `url`, `image_url`, `b64_json`, `image`, or `base64`
 
+For 4K photo edits, the most reliable path is gateway-synchronous `edit` or `generate` with `response_format=url`, `output_format=jpeg`, and a long timeout such as `--timeout 3600`. It is still fine for the local agent/runtime to run that command as a long-lived process and poll its output. Avoid the gateway `--async` flag as the first attempt because the gateway's async entry can be held by the origin long enough to trigger a Cloudflare 524 before a task id is returned.
+
 ## Errors
 
 - `401` or `403`: key is invalid or lacks model access.
 - model exists but generation fails with distributor/channel wording: gateway key works, but the image backend is unavailable for that group.
-- timeout on high/4K: retry once or use a smaller size.
+- `IncompleteRead` on high/4K: retry with `response_format=url` and `output_format=jpeg`; current script defaults to URL responses and retries URL downloads.
+- `524` on `?async=true`: wait at least the returned retry interval, then prefer synchronous URL-return mode before using async again.
+- timeout on high/4K: retry once with URL/JPEG and a longer timeout; use a smaller size only if the user accepts that tradeoff.
