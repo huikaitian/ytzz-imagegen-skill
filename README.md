@@ -15,9 +15,19 @@ The skill uses `gpt-image-2`, always requests `quality=high`, and defaults to 4K
 - High-quality-only requests
 - 4K ratio presets from `1:1` through `3:1` and `1:3`
 - URL image responses by default for more reliable 4K transfers
+- Automatic retries for retryable API failures such as `429`, `5xx`, and `524`
 - Automatic retries for URL image downloads
+- Mask-safe edit handling: the first image is not compressed when a mask is used
 - Local file outputs under `output/imagegen/`
 - No API keys stored in the skill or repository
+
+## Optional Dependency
+
+The skill uses only Python standard library for basic requests. Install Pillow for more reliable large image edits because it enables upload compression for reference images:
+
+```powershell
+python -m pip install pillow
+```
 
 ## Install
 
@@ -74,11 +84,14 @@ python "$env:USERPROFILE\.codex\skills\ytzz-imagegen\scripts\ytzz_imagegen.py" e
   --ratio 9:16 `
   --output-format jpeg `
   --response-format url `
+  --api-retries 4 `
   --timeout 3600 `
   --out ".\output\imagegen\portrait-4k.jpg"
 ```
 
 For large photographic edits, use normal gateway-synchronous mode first. The local agent/runtime may still run the command as a long-lived process and poll it; that is different from the gateway `--async` flag. The gateway async entry can hit a Cloudflare 524 timeout before it returns a task id, while large base64 responses can fail mid-transfer. URL responses plus JPEG output have proven more reliable for 4K deliverables.
+
+When using `--mask`, keep the mask dimensions identical to the first input image. The script will avoid compressing that first image so the mask remains compatible.
 
 Check connectivity:
 

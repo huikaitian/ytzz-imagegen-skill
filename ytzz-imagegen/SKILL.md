@@ -14,10 +14,12 @@ Use this skill when the user wants image generation or image editing through the
 - Quality: always `high`
 - Size policy: use the 4K ratio presets below; default ratio is `16:9` -> `3840x2160`
 - Response format: default to `url` to avoid large 4K `b64_json` responses failing mid-transfer
+- API retries: retry retryable API failures automatically, default `4` attempts
 - Download retries: URL image downloads retry automatically, default `4` attempts
 - Output directory: `output/imagegen/` under the active workspace
 - API key environment variable: `YTZZ_SUBROUTER_API_KEY`
 - Compatibility fallback key environment variable: `SUBROUTER_API_KEY`
+- Optional dependency: Pillow is recommended for edit/reference-image upload compression
 - Do not write API keys into prompts, files, logs, generated images, or user-visible replies.
 
 If no key is present, guide the user to register or sign in at `https://ytzz.subrouter.ai`, create an API key, and then provide the key to the agent for that run or set `YTZZ_SUBROUTER_API_KEY` locally. Do not write the key into repository files or generated artifacts, and do not repeat the full key back to the user.
@@ -32,6 +34,13 @@ If no key is present, guide the user to register or sign in at `https://ytzz.sub
 6. Inspect the result when possible. Verify subject, style, composition, text accuracy, dimensions, and constraints.
 7. Show generated images with absolute Markdown image paths and report the saved file path plus the final prompt.
 
+## When Not To Use
+
+- Do not use this skill for simple SVG/vector/logo-system edits that should stay vector-native.
+- Do not use this skill for UI icons or diagrams that are better produced directly in SVG, HTML/CSS, canvas, Mermaid, or code.
+- Do not use this skill when the user clearly asks for deterministic repo-native graphics instead of a generated bitmap.
+- Do not use this skill to bypass an existing app or design-system asset pipeline unless the user asks for a raster mockup or concept image.
+
 ## Proven 4K Path
 
 For high-resolution photo edits, identity-preserve portraits, and other large final images, prefer this chain:
@@ -40,15 +49,16 @@ For high-resolution photo edits, identity-preserve portraits, and other large fi
 2. Return image URLs instead of base64: the script defaults to `response_format=url`.
 3. For 4K photographic deliverables, prefer `--output-format jpeg` unless the user specifically needs PNG.
 4. Use a long timeout such as `--timeout 3600`.
-5. Inspect the saved file dimensions and image quality after generation.
+5. Let API and download retries stay enabled unless the user explicitly asks to disable them.
+6. Inspect the saved file dimensions and image quality after generation.
 
 This does not prevent the local agent/runtime from launching the command as a long-running process and polling it later. The distinction is important: local async waiting is fine; the gateway `--async` API mode can hit Cloudflare 524 proxy timeouts before a task is accepted. Large base64 responses can also fail with partial reads. The stable path that has worked for 4K portrait edits is:
 
 ```powershell
-python "C:\Users\admin\.codex\skills\ytzz-imagegen\scripts\ytzz_imagegen.py" edit `
-  --image "D:\AIONUI\input.jpg" `
-  --prompt-file "D:\AIONUI\output\imagegen\prompt.txt" `
-  --out "D:\AIONUI\output\imagegen\portrait-4k.jpg" `
+python "$env:USERPROFILE\.codex\skills\ytzz-imagegen\scripts\ytzz_imagegen.py" edit `
+  --image ".\input.jpg" `
+  --prompt-file ".\output\imagegen\prompt.txt" `
+  --out ".\output\imagegen\portrait-4k.jpg" `
   --ratio 9:16 `
   --output-format jpeg `
   --response-format url `
@@ -60,19 +70,19 @@ python "C:\Users\admin\.codex\skills\ytzz-imagegen\scripts\ytzz_imagegen.py" edi
 Generate:
 
 ```powershell
-python "C:\Users\admin\.codex\skills\ytzz-imagegen\scripts\ytzz_imagegen.py" generate `
-  --prompt-file "D:\AIONUI\output\imagegen\prompt.txt" `
-  --out "D:\AIONUI\output\imagegen\result.png" `
+python "$env:USERPROFILE\.codex\skills\ytzz-imagegen\scripts\ytzz_imagegen.py" generate `
+  --prompt-file ".\output\imagegen\prompt.txt" `
+  --out ".\output\imagegen\result.png" `
   --ratio 16:9
 ```
 
 Edit or reference-image generation:
 
 ```powershell
-python "C:\Users\admin\.codex\skills\ytzz-imagegen\scripts\ytzz_imagegen.py" edit `
-  --image "D:\AIONUI\input.png" `
+python "$env:USERPROFILE\.codex\skills\ytzz-imagegen\scripts\ytzz_imagegen.py" edit `
+  --image ".\input.png" `
   --prompt "Change only the background; keep the subject unchanged." `
-  --out "D:\AIONUI\output\imagegen\edit.jpg" `
+  --out ".\output\imagegen\edit.jpg" `
   --ratio 1:1 `
   --output-format jpeg `
   --timeout 3600
@@ -81,15 +91,15 @@ python "C:\Users\admin\.codex\skills\ytzz-imagegen\scripts\ytzz_imagegen.py" edi
 Check gateway models:
 
 ```powershell
-python "C:\Users\admin\.codex\skills\ytzz-imagegen\scripts\ytzz_imagegen.py" models --json
+python "$env:USERPROFILE\.codex\skills\ytzz-imagegen\scripts\ytzz_imagegen.py" models --json
 ```
 
 Batch generate after the user asks for many deliverables:
 
 ```powershell
-python "C:\Users\admin\.codex\skills\ytzz-imagegen\scripts\ytzz_imagegen.py" generate-batch `
-  --input "D:\AIONUI\tmp\imagegen\jobs.jsonl" `
-  --out-dir "D:\AIONUI\output\imagegen\batch" `
+python "$env:USERPROFILE\.codex\skills\ytzz-imagegen\scripts\ytzz_imagegen.py" generate-batch `
+  --input ".\tmp\imagegen\jobs.jsonl" `
+  --out-dir ".\output\imagegen\batch" `
   --concurrency 3
 ```
 
@@ -122,6 +132,8 @@ Avoid: <negative constraints>
 ```
 
 For edits, repeat invariants: `change only X; keep Y unchanged`. For in-image text, quote the exact text and require verbatim rendering.
+
+Mask note: when `--mask` is used, the first edit image is not compressed so the mask remains dimension-compatible with the target image. Additional reference images may still be compressed for upload efficiency.
 
 ## Use-Case Slugs
 
@@ -184,7 +196,7 @@ Default sequence:
 3. Run:
 
 ```powershell
-python "C:\Users\admin\.codex\skills\.system\imagegen\scripts\remove_chroma_key.py" `
+python "$env:USERPROFILE\.codex\skills\.system\imagegen\scripts\remove_chroma_key.py" `
   --input "<source.png>" `
   --out "<final-transparent.png>" `
   --auto-key border `

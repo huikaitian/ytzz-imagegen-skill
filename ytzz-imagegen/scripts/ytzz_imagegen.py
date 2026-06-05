@@ -27,6 +27,7 @@ DEFAULT_MODEL = "gpt-image-2"
 DEFAULT_RATIO = "16:9"
 DEFAULT_QUALITY = "high"
 DEFAULT_RESPONSE_FORMAT = "url"
+DEFAULT_API_RETRIES = 4
 DEFAULT_DOWNLOAD_RETRIES = 4
 IMAGE2_MAX_EDGE = 3840
 IMAGE2_MIN_PIXELS = 655_360
@@ -164,12 +165,33 @@ def parse_error_body(exc: urllib.error.HTTPError) -> Any:
         return raw
 
 
+def retry_after_seconds(detail: Any, attempt: int) -> float:
+    if isinstance(detail, dict):
+        value = detail.get("retry_after") or detail.get("retry-after")
+        try:
+            if value is not None:
+                return max(0.0, min(float(value), 120.0))
+        except (TypeError, ValueError):
+            pass
+    return min(2.0**attempt, 30.0)
+
+
+def is_retryable_error(status: int | None, detail: Any = None) -> bool:
+    if status in {408, 409, 425, 429, 500, 502, 503, 504, 520, 522, 524}:
+        return True
+    if isinstance(detail, str):
+        lowered = detail.lower()
+        return any(token in lowered for token in ("timeout", "timed out", "connection reset", "remote end closed"))
+    return False
+
+
 def request_json(
     url: str,
     method: str,
     api_key: str,
     payload: dict[str, Any] | None = None,
     timeout: int = 900,
+    retries: int = DEFAULT_API_RETRIES,
 ) -> tuple[int, Any]:
     data = None
     headers = {
@@ -181,15 +203,27 @@ def request_json(
         headers["Content-Type"] = "application/json"
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout, context=ssl_context()) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
-            return resp.status, json.loads(raw) if raw else {}
-    except urllib.error.HTTPError as exc:
-        raise GatewayError(url, exc.code, parse_error_body(exc)) from exc
-    except urllib.error.URLError as exc:
-        raise GatewayError(url, None, str(exc.reason)) from exc
+    attempts = max(1, retries)
+    last_error: BaseException | None = None
+    for attempt in range(1, attempts + 1):
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout, context=ssl_context()) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+                return resp.status, json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as exc:
+            detail = parse_error_body(exc)
+            last_error = GatewayError(url, exc.code, detail)
+            if not is_retryable_error(exc.code, detail) or attempt == attempts:
+                raise last_error from exc
+            time.sleep(retry_after_seconds(detail, attempt))
+        except urllib.error.URLError as exc:
+            detail = str(exc.reason)
+            last_error = GatewayError(url, None, detail)
+            if not is_retryable_error(None, detail) or attempt == attempts:
+                raise last_error from exc
+            time.sleep(retry_after_seconds(detail, attempt))
+    raise last_error or GatewayError(url, None, "Unknown request failure.")
 
 
 def multipart_body(fields: dict[str, Any], files: list[dict[str, Any]]) -> tuple[bytes, str]:
@@ -230,6 +264,7 @@ def request_multipart(
     files: list[dict[str, Any]],
     api_key: str,
     timeout: int = 900,
+    retries: int = DEFAULT_API_RETRIES,
 ) -> tuple[int, Any]:
     body, boundary = multipart_body(fields, files)
     headers = {
@@ -239,15 +274,27 @@ def request_multipart(
         "Content-Length": str(len(body)),
         "User-Agent": "ytzz-imagegen/1.0",
     }
-    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout, context=ssl_context()) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
-            return resp.status, json.loads(raw) if raw else {}
-    except urllib.error.HTTPError as exc:
-        raise GatewayError(url, exc.code, parse_error_body(exc)) from exc
-    except urllib.error.URLError as exc:
-        raise GatewayError(url, None, str(exc.reason)) from exc
+    attempts = max(1, retries)
+    last_error: BaseException | None = None
+    for attempt in range(1, attempts + 1):
+        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout, context=ssl_context()) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+                return resp.status, json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as exc:
+            detail = parse_error_body(exc)
+            last_error = GatewayError(url, exc.code, detail)
+            if not is_retryable_error(exc.code, detail) or attempt == attempts:
+                raise last_error from exc
+            time.sleep(retry_after_seconds(detail, attempt))
+        except urllib.error.URLError as exc:
+            detail = str(exc.reason)
+            last_error = GatewayError(url, None, detail)
+            if not is_retryable_error(None, detail) or attempt == attempts:
+                raise last_error from exc
+            time.sleep(retry_after_seconds(detail, attempt))
+    raise last_error or GatewayError(url, None, "Unknown multipart request failure.")
 
 
 def normalize_image_items(payload: Any) -> list[dict[str, Any]]:
@@ -307,7 +354,13 @@ def extract_task_status(payload: Any) -> str:
     return ""
 
 
-def poll_task_result(base_url: str, api_key: str, initial_payload: Any, timeout: int) -> Any:
+def poll_task_result(
+    base_url: str,
+    api_key: str,
+    initial_payload: Any,
+    timeout: int,
+    retries: int = DEFAULT_API_RETRIES,
+) -> Any:
     task_id = extract_task_id(initial_payload)
     if not task_id:
         return initial_payload
@@ -315,7 +368,7 @@ def poll_task_result(base_url: str, api_key: str, initial_payload: Any, timeout:
     task_url = endpoint(base_url, f"/v1/images/tasks/{urllib.parse.quote(task_id)}")
     last_payload = initial_payload
     while time.time() < deadline:
-        status, payload = request_json(task_url, "GET", api_key, timeout=min(60, timeout))
+        status, payload = request_json(task_url, "GET", api_key, timeout=min(60, timeout), retries=retries)
         last_payload = payload
         try:
             normalize_image_items(payload)
@@ -529,7 +582,7 @@ def command_models(args: argparse.Namespace) -> int:
     base_url = normalize_base_url(DEFAULT_BASE_URL)
     api_key = api_key_from_args(args)
     url = endpoint(base_url, "/v1/models")
-    status, result = request_json(url, "GET", api_key, timeout=args.timeout)
+    status, result = request_json(url, "GET", api_key, timeout=args.timeout, retries=args.api_retries)
     models = []
     if isinstance(result, dict):
         for item in result.get("data") or []:
@@ -558,9 +611,9 @@ def command_generate(args: argparse.Namespace) -> int:
     api_key = api_key_from_args(args)
     base_url = normalize_base_url(DEFAULT_BASE_URL)
     url = endpoint(base_url, "/v1/images/generations", async_mode=args.async_mode)
-    status, result = request_json(url, "POST", api_key, payload, timeout=args.timeout)
+    status, result = request_json(url, "POST", api_key, payload, timeout=args.timeout, retries=args.api_retries)
     if args.async_mode:
-        result = poll_task_result(base_url, api_key, result, args.timeout)
+        result = poll_task_result(base_url, api_key, result, args.timeout, args.api_retries)
     items = normalize_image_items(result)
     suffix = suffix_for_output(args)
     paths = output_paths(args, len(items), suffix)
@@ -612,11 +665,15 @@ def prepare_image_for_upload(path: Path, tmpdir: Path) -> Path:
 
 def image_files_from_args(args: argparse.Namespace, tmpdir: Path) -> list[dict[str, Any]]:
     files = []
-    for image in args.image or []:
+    for index, image in enumerate(args.image or []):
         path = Path(image).expanduser().resolve()
         if not path.is_file():
             raise FileNotFoundError(f"Image not found: {path}")
-        files.append({"field": "image[]", "path": prepare_image_for_upload(path, tmpdir)})
+        if index == 0 and args.mask:
+            upload_path = path
+        else:
+            upload_path = prepare_image_for_upload(path, tmpdir)
+        files.append({"field": "image[]", "path": upload_path})
     if args.mask:
         path = Path(args.mask).expanduser().resolve()
         if not path.is_file():
@@ -637,9 +694,9 @@ def command_edit(args: argparse.Namespace) -> int:
     with tempfile.TemporaryDirectory(prefix="ytzz-imagegen-edit-") as tmp:
         files = image_files_from_args(args, Path(tmp))
         url = endpoint(base_url, "/v1/images/edits", async_mode=args.async_mode)
-        status, result = request_multipart(url, payload, files, api_key, timeout=args.timeout)
+        status, result = request_multipart(url, payload, files, api_key, timeout=args.timeout, retries=args.api_retries)
     if args.async_mode:
-        result = poll_task_result(base_url, api_key, result, args.timeout)
+        result = poll_task_result(base_url, api_key, result, args.timeout, args.api_retries)
     items = normalize_image_items(result)
     suffix = suffix_for_output(args)
     paths = output_paths(args, len(items), suffix)
@@ -673,8 +730,11 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
 def run_batch_job(args: argparse.Namespace, job: dict[str, Any], index: int, base_url: str, api_key: str) -> dict[str, Any]:
     prompt = read_prompt(args, job)
     payload = payload_from_args(args, prompt, job)
-    url = endpoint(base_url, "/v1/images/generations", async_mode=bool(job.get("async") or args.async_mode))
-    status, result = request_json(url, "POST", api_key, payload, timeout=args.timeout)
+    async_job = bool(job.get("async") or args.async_mode)
+    url = endpoint(base_url, "/v1/images/generations", async_mode=async_job)
+    status, result = request_json(url, "POST", api_key, payload, timeout=args.timeout, retries=args.api_retries)
+    if async_job:
+        result = poll_task_result(base_url, api_key, result, args.timeout, args.api_retries)
     items = normalize_image_items(result)
     suffix = suffix_for_output(args, job)
     job = dict(job)
@@ -731,6 +791,7 @@ def command_generate_batch(args: argparse.Namespace) -> int:
 def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--api-key", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--timeout", type=int, default=900)
+    parser.add_argument("--api-retries", type=int, default=DEFAULT_API_RETRIES)
     parser.add_argument("--json", action="store_true")
 
 

@@ -22,9 +22,12 @@ The script uses the fixed base URL `https://ytzz.subrouter.ai/v1`.
 - `n`: number of images
 - `output_format`: `png`, `jpeg`, or `webp` when supported by the gateway
 - `response_format`: defaults to `url`; this avoids large 4K `b64_json` responses failing mid-transfer
+- `api_retries`: CLI-only retry count for retryable API failures such as `429`, `5xx`, and `524`; default is `4`
 - `download_retries`: CLI-only download retry count for URL image responses; default is `4`
 
 For edits, pass one or more `--image` values. The script sends them as multipart `image[]` fields, which matches common OpenAI-compatible gateways.
+
+Pillow is optional but recommended. When available, large edit/reference images are downscaled before upload for stability. If `--mask` is passed, the first edit target is not compressed so the mask stays dimension-compatible; additional reference images may still be compressed.
 
 ## Size Rules For gpt-image-2
 
@@ -71,5 +74,5 @@ For 4K photo edits, the most reliable path is gateway-synchronous `edit` or `gen
 - `401` or `403`: key is invalid or lacks model access.
 - model exists but generation fails with distributor/channel wording: gateway key works, but the image backend is unavailable for that group.
 - `IncompleteRead` on high/4K: retry with `response_format=url` and `output_format=jpeg`; current script defaults to URL responses and retries URL downloads.
-- `524` on `?async=true`: wait at least the returned retry interval, then prefer synchronous URL-return mode before using async again.
+- `524` or other retryable API errors: current script retries API requests automatically; if gateway async still fails, wait at least the returned retry interval, then prefer synchronous URL-return mode before using async again.
 - timeout on high/4K: retry once with URL/JPEG and a longer timeout; use a smaller size only if the user accepts that tradeoff.
