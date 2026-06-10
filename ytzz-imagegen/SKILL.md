@@ -13,6 +13,7 @@ Use this skill when the user wants image generation or image editing through the
 - Model: `gpt-image-2`
 - Quality: always `high`
 - Size policy: use the 4K ratio presets below; default ratio is `16:9` -> `3840x2160`
+- Native Chinese text rendering: generate complete images with Chinese text directly in the model output; do not default to making a background first and adding text locally afterward
 - Response format: default to `url` to avoid large 4K `b64_json` responses failing mid-transfer
 - API retries: retry retryable API failures automatically, default `4` attempts
 - Download retries: URL image downloads retry automatically, default `4` attempts
@@ -33,6 +34,18 @@ If no key is present, guide the user to register or sign in at `https://ytzz.sub
 5. Save final deliverables in the workspace, normally `output/imagegen/`.
 6. Inspect the result when possible. Verify subject, style, composition, text accuracy, dimensions, and constraints.
 7. Show generated images with absolute Markdown image paths and report the saved file path plus the final prompt.
+
+## Chinese Text Rendering
+
+This workflow supports direct Chinese in-image text. When the user asks for Chinese titles, poster lettering, signs, packaging copy, slogans, or decorative typography, prompt `gpt-image-2` to render the complete final image with the Chinese text already integrated into the scene.
+
+Do not default to a two-step workflow of generating a blank/background image and then adding Chinese text locally. Use local text overlay only when the user explicitly asks for deterministic post-production typography, editable text layers, or a correction that the model cannot reliably render after iteration.
+
+For Chinese text:
+- Put the exact Chinese copy in `Text (verbatim): "..."`.
+- State typography, placement, color, glow, material, and how the text integrates with the image.
+- Require no extra characters, no English substitutions, no pinyin, and no watermark.
+- After generation, inspect text accuracy. If text is wrong, retry with a tighter prompt or use an edit request before considering local overlay.
 
 ## When Not To Use
 
@@ -131,7 +144,7 @@ Constraints: <must keep/must avoid>
 Avoid: <negative constraints>
 ```
 
-For edits, repeat invariants: `change only X; keep Y unchanged`. For in-image text, quote the exact text and require verbatim rendering.
+For edits, repeat invariants: `change only X; keep Y unchanged`. For in-image text, especially Chinese text, quote the exact text and require verbatim rendering directly in the generated image.
 
 Mask note: when `--mask` is used, the first edit image is not compressed so the mask remains dimension-compatible with the target image. Additional reference images may still be compressed for upload efficiency.
 

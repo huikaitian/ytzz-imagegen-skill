@@ -14,6 +14,7 @@ The skill uses `gpt-image-2`, always requests `quality=high`, and defaults to 4K
 - `gpt-image-2` image generation and edits
 - High-quality-only requests
 - 4K ratio presets from `1:1` through `3:1` and `1:3`
+- Native Chinese in-image text rendering; no background-first text-overlay workflow required
 - URL image responses by default for more reliable 4K transfers
 - Automatic retries for retryable API failures such as `429`, `5xx`, and `524`
 - Automatic retries for URL image downloads
@@ -74,6 +75,19 @@ python "$env:USERPROFILE\.codex\skills\ytzz-imagegen\scripts\ytzz_imagegen.py" g
   --prompt "A rain-slick neon alley with one warm lantern reflected in the pavement" `
   --out ".\output\imagegen\neon-alley.png"
 ```
+
+Generate a complete Chinese poster directly:
+
+```powershell
+python "$env:USERPROFILE\.codex\skills\ytzz-imagegen\scripts\ytzz_imagegen.py" generate `
+  --ratio 9:16 `
+  --prompt "A cinematic rain-slick neon alley poster. Text (verbatim): \"深夜独醉\". Typography: large flamboyant Chinese neon calligraphy, wine-red and electric-cyan glow, integrated into the upper poster. Constraints: render exactly \"深夜独醉\"; no extra characters; no English; no pinyin; no watermark." `
+  --out ".\output\imagegen\shen-ye-du-zui.jpg" `
+  --output-format jpeg `
+  --timeout 3600
+```
+
+For Chinese titles, signs, slogans, packaging copy, and decorative poster lettering, prompt the model to render the complete final image directly. Do not default to generating a blank/background image and adding text locally afterward unless the user explicitly asks for deterministic post-production text or editable text layers.
 
 Stable 4K photo edit path:
 

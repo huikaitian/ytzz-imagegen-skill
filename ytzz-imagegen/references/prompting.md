@@ -42,7 +42,19 @@ For in-image text:
 - quote exact copy
 - state typography and placement
 - require verbatim rendering
-- use `quality=medium` or `quality=high`
+- generate the complete image with the text rendered natively by `gpt-image-2`
+- do not default to generating a background first and adding text locally afterward
+- use local text overlay only if the user explicitly asks for editable/deterministic typography or model retries fail
+- for Chinese text, require no extra characters, no English substitutions, no pinyin, and no watermark
+- use `quality=high`
+
+Chinese prompt pattern:
+
+```text
+Text (verbatim): "深夜独醉"
+Typography: large flamboyant Chinese lettering, neon calligraphy style, glowing wine-red and electric-cyan strokes, integrated into the upper part of the poster.
+Constraints: render the Chinese text exactly as "深夜独醉"; no extra characters; no English; no pinyin; no watermark.
+```
 
 ## Transparent Cutouts
 
